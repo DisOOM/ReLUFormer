@@ -32,6 +32,9 @@ pip install pytest
 python test_all.py
 ```
 
+###稀疏性
+![Softmax热力图](https://github.com/DisOOM/ReLUFormer.c/blob/main/AttnMatForSoftmax.png)
+
 ## 许可证
 
 MIT
