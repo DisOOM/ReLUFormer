@@ -33,8 +33,8 @@ python test_all.py
 ```
 
 ###稀疏性与尖峰性
-![Softmax热力图](https://github.com/DisOOM/ReLUFormer.c/blob/main/AttnMatForSoftMax.png)
-![ReLU热力图](https://github.com/DisOOM/ReLUFormer.c/blob/main/AttnMatForReLU.png)
+![Softmax热力图](https://github.com/DisOOM/ReLUFormer.c/blob/master/AttnMatForSoftMax.png)
+![ReLU热力图](https://github.com/DisOOM/ReLUFormer.c/blob/master/AttnMatForReLU.png)
 可见，ReLU Attention具有更高的尖峰性，这使得在需要精确“点关注”的任务场景下ReLU Attention能工作的更好，但也能进行均匀分布的关注。
 与此同时ReLU Attention在这些token中通过ReLU大量置以负值，模型可以提高信噪比，理论上能够缓解SoftMax Attention在长上下文中的注意力稀释问题。
 
