@@ -143,7 +143,7 @@ class Attention(nn.Module):
         scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
         scores = scores + self.mask[:, :, :seqlen, :seqlen]   # (bs, n_local_heads, seqlen, cache_len + seqlen)
         scores = F.relu(scores) ** 2
-        scores = scores/512
+        scores = F.normalize(scores, dim=-1, p=1.0) # Normalize
         scores = self.attn_dropout(scores)
         output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
 
@@ -166,7 +166,7 @@ class FeedForward(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return self.dropout(self.w2(F.relu(self.w1(x))**2))
+        return self.dropout(self.w2(F.relu(self.w1(x))**2)) # ReLU^2 FFN
 
 
 class TransformerBlock(nn.Module):
