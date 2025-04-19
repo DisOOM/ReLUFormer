@@ -34,28 +34,28 @@ from export import model_export
 # -----------------------------------------------------------------------------
 # I/O
 out_dir = "out"
-eval_interval = 2000
+# log file path
+log_file = os.path.join(out_dir, f"training_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+eval_interval = 100
 log_interval = 1
 eval_iters = 100
 eval_only = False  # if True, script exits right after the first eval
-always_save_checkpoint = False  # if True, always save a checkpoint after each eval
+always_save_checkpoint = True  # if True, always save a checkpoint after each eval
 init_from = "scratch"  # 'scratch' or 'resume'
 # wandb logging
 wandb_log = False  # disabled by default
 wandb_project = "llamac"
 wandb_run_name = "run" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 # data
-batch_size = 128  # if gradient_accumulation_steps > 1, this is the micro-batch size
-max_seq_len = 256
+batch_size = 8  # if gradient_accumulation_steps > 1, this is the micro-batch size
+max_seq_len = 512
 vocab_source = "llama2" # llama2|custom; use Lllama 2 vocab from Meta, or custom trained
-vocab_size = 32000 # the Llama 2 tokenizer has 32K tokens
+vocab_size = 55296 # the Llama 2 tokenizer has 32K tokens
 # model
-dim = 288
+dim = 704
 n_layers = 6
-n_heads = 6
-n_kv_heads = 6
-multiple_of = 32
 dropout = 0.0
+n_layers = 6
 # adamw optimizer
 gradient_accumulation_steps = 4  # used to simulate larger batch sizes
 learning_rate = 5e-4  # max learning rate
@@ -70,7 +70,7 @@ warmup_iters = 1000  # how many steps to warm up for
 # system
 device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = "bfloat16"  # float32|bfloat16|float16
-compile = True  # use PyTorch 2.0 to compile the model to be faster
+compile = False  # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
 config_keys = [
     k
@@ -87,7 +87,13 @@ min_lr = 0.0  # minimum learning rate, should be ~= learning_rate/10 per Chinchi
 
 # validating checks
 assert vocab_source in ["llama2", "custom"]
-assert vocab_source == "custom" or vocab_size == 32000, "The vocab from Meta has 32K tokens"
+assert vocab_source == "custom" or vocab_size == 55296, "The vocab from Meta has 32K tokens"
+
+def log_to_file(message):
+    """log output"""
+    print(message)
+    with open(log_file, 'a', encoding='utf-8') as f:
+        f.write(message + '\n')
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
@@ -116,6 +122,12 @@ if master_process:
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
+    with open(log_file, 'w', encoding='utf-8') as f:
+        f.write(f"Training started at {datetime.now()}\n")
+        f.write("Configuration:\n")
+        for k, v in config.items():
+            f.write(f"{k}: {v}\n")
+        f.write("\n")
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
@@ -147,13 +159,10 @@ best_val_loss = 1e9
 model_args = dict(
     dim=dim,
     n_layers=n_layers,
-    n_heads=n_heads,
-    n_kv_heads=n_kv_heads,
     vocab_size=vocab_size,
-    multiple_of=multiple_of,
     max_seq_len=max_seq_len,
     dropout=dropout,
-)  # start with model_args from command line
+) # start with model_args from command line
 if init_from == "scratch":
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -167,7 +176,7 @@ elif init_from == "resume":
     checkpoint_model_args = checkpoint["model_args"]
     # force these config attributes to be equal otherwise we can't even resume training
     # the rest of the attributes (e.g. dropout) can stay as desired from command line
-    for k in ["dim", "n_layers", "n_heads", "n_kv_heads", "vocab_size", "multiple_of", "max_seq_len"]:
+    for k in ["dim", "n_layers", "vocab_size", "max_seq_len"]:
         model_args[k] = checkpoint_model_args[k]
     # create the model
     gptconf = ModelArgs(**model_args)
@@ -260,7 +269,9 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
-        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        log_message = f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
+        log_to_file(log_message)
+        
         if wandb_log:
             try:
                 wandb.log(
@@ -270,9 +281,12 @@ while True:
                         "loss/train": losses["train"],
                         "loss/val": losses["val"],
                         "lr": lr,
-                        "mfu": running_mfu * 100,  # convert to percentage
-                    }, step = iter_num
+                        "mfu": running_mfu * 100,
+                    }, step=iter_num
                 )
+            except Exception as e:
+                error_message = f"logging to wandb failed: {e}"
+                log_to_file(error_message)
             except Exception as e:
                 print(f"logging to wandb failed: {e}")
         if losses["val"] < best_val_loss or always_save_checkpoint:
@@ -288,7 +302,6 @@ while True:
                 }
                 print(f"saving checkpoint to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
-                model_export(raw_model, os.path.join(out_dir, "model.bin"), version=0)
     if iter_num == 0 and eval_only:
         break
 
@@ -324,14 +337,12 @@ while True:
     dt = t1 - t0
     t0 = t1
     if iter_num % log_interval == 0 and master_process:
-        # get loss as float, scale up due to the divide above. note: this is a CPU-GPU sync point
         lossf = loss.item() * gradient_accumulation_steps
-        if local_iter_num >= 5:  # let the training loop settle a bit
+        if local_iter_num >= 5:
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
-        print(
-            f"{iter_num} | loss {lossf:.4f} | lr {lr:e} | {dt*1000:.2f}ms | mfu {running_mfu*100:.2f}%"
-        )
+        log_message = f"{iter_num} | loss {lossf:.4f} | lr {lr:e} | {dt*1000:.2f}ms | mfu {running_mfu*100:.2f}%"
+        log_to_file(log_message)
     iter_num += 1
     local_iter_num += 1
 
@@ -341,3 +352,7 @@ while True:
 
 if ddp:
     destroy_process_group()
+
+# Record
+if master_process:
+    log_to_file(f"\nTraining finished at {datetime.now()}")
